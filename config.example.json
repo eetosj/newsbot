@@ -1,0 +1,32 @@
+{
+  "keywords": {
+    "ai": ["artificial intelligence", "tekoäly", "tekoälyn", "tekoälyä"],
+    "machine learning": ["koneoppiminen", "koneoppimisen", "koneoppimista"],
+    "computer science": ["tietojenkäsittelytiede", "tietojenkäsittelytieteen"],
+    "mathematics": ["math", "maths", "matematiikka", "matematiikan", "matematiikkaa"]
+  },
+  "http": {
+    "address_family": "ipv4"
+  },
+  "evaluation": {
+    "news_max_age_days": 3,
+    "research_max_age_days": 14,
+    "rejection_cooldown_hours": 24
+  },
+  "ollama": {
+    "model": null,
+    "base_url": "http://localhost:11434",
+    "timeout_seconds": 120,
+    "context_tokens": 16384
+  },
+  "sources": [
+    {"name": "Yle", "url": "https://yle.fi/rss/uutiset/tuoreimmat"},
+    {"name": "Yle Tiede", "url": "https://yle.fi/rss/t/18-819/fi"},
+    {"name": "Ars Technica", "url": "https://feeds.arstechnica.com/arstechnica/index"},
+    {"name": "The Guardian", "url": "https://www.theguardian.com/international/rss"},
+    {"name": "The Guardian Technology", "url": "https://www.theguardian.com/technology/rss"},
+    {"name": "The Guardian Science", "url": "https://www.theguardian.com/science/rss"},
+    {"name": "arXiv AI and ML", "url": "https://rss.arxiv.org/rss/cs.AI+cs.LG+stat.ML", "kind": "research"},
+    {"name": "arXiv Mathematics", "url": "https://rss.arxiv.org/rss/math", "kind": "research"}
+  ]
+}
