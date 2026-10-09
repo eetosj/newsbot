@@ -51,8 +51,11 @@ class OllamaConfig:
     base_url: str = "http://localhost:11434"
     timeout_seconds: float = 120
     context_tokens: int = 16384
+    think: bool = False
 
     def __post_init__(self):
+        if type(self.think) is not bool:
+            raise ValueError("ollama.think must be a boolean")
         if self.model is not None and (not isinstance(self.model, str) or not self.model.strip()):
             raise ValueError("Ollama model must be a nonempty string, or null until selected")
         if not isinstance(self.base_url, str) or not http_url(self.base_url):

@@ -1,12 +1,17 @@
 """Local structured-output client; article content is input data, not instructions."""
 
 import json
+import logging
+import time
 from dataclasses import dataclass
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from .articles import Article, ContentKind
 from .config import OllamaConfig
+
+
+logger = logging.getLogger(__name__)
 
 
 class ModelError(Exception):
@@ -126,11 +131,15 @@ class OllamaClient:
             "messages": messages,
             "format": response_schema(article.content_kind),
             "stream": False,
+            "think": self.config.think,
             "options": {"temperature": 0, "num_ctx": self.config.context_tokens, "num_predict": 2048},
         }
         request = Request(self.config.base_url.rstrip("/") + "/api/chat",
                           data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                           headers={"Content-Type": "application/json"}, method="POST")
+        started = time.monotonic()
+        logger.info("Evaluating %s with %s (thinking=%s)", article.url,
+                    self.config.model, self.config.think)
         try:
             with urlopen(request, timeout=self.config.timeout_seconds) as response:
                 body = response.read(2_000_001)
@@ -146,8 +155,15 @@ class OllamaClient:
             raise ModelError("Ollama response must be an object")
         if envelope.get("error"):
             raise OllamaUnavailable(f"Ollama server reported an error: {envelope['error']}")
+        logger.info("Model response for %s after %.1fs: done=%s, finish=%s, generated_tokens=%s",
+                    article.url, time.monotonic() - started, envelope.get("done"),
+                    envelope.get("done_reason"), envelope.get("eval_count"))
         if envelope.get("done") is not True or envelope.get("done_reason") != "stop":
-            raise ModelError("Ollama response did not complete normally")
+            raise ModelError(
+                f"Ollama response did not complete normally "
+                f"(done={envelope.get('done')!r}, finish={envelope.get('done_reason')!r}, "
+                f"generated_tokens={envelope.get('eval_count')!r})"
+            )
         message = envelope.get("message")
         if not isinstance(message, dict) or not isinstance(message.get("content"), str):
             raise ModelError("Ollama response lacks message content")

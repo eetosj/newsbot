@@ -14,9 +14,10 @@
     "rejection_cooldown_hours": 24
   },
   "ollama": {
-    "model": null,
+    "model": "qwen3-instruct-local",
     "base_url": "http://localhost:11434",
     "timeout_seconds": 120,
+    "think": false,
     "context_tokens": 16384
   },
   "sources": [

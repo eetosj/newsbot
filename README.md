@@ -82,6 +82,18 @@ your configuration or the `--model` option. Replace `YOUR_MODEL` with that name:
 .venv/bin/python -m newsbot --evaluate --model YOUR_MODEL --limit-items 10
 ```
 
+This project's configuration now selects the installed non-thinking model
+`qwen3-instruct-local`. To evaluate a small batch with that default:
+
+```sh
+.venv/bin/python -m newsbot --evaluate --limit-items 3
+```
+
+The local validation returned a six-token JSON probe with no thinking trace.
+It then evaluated a Finnish article and an English research abstract successfully
+in a temporary database, with both responses ending normally. See
+[MODEL_SETUP.md](MODEL_SETUP.md) for the selected model and verification details.
+
 Evaluation operates on the existing database; it does not collect new feeds or
 send Discord/Telegram messages. It checks publication age again so candidates
 that waited too long cannot enter the delivery queue. Already queued and posted
@@ -91,6 +103,11 @@ without a model call, so they do not permanently block priority reevaluation.
 The `evaluation` section configures `news_max_age_days`, `research_max_age_days`,
 and `rejection_cooldown_hours` (default 24). The `ollama` section configures `model`,
 `base_url` (default `http://localhost:11434`), `timeout_seconds`, and `context_tokens`.
+It also includes `think`, a boolean defaulting to `false`: supported models are
+explicitly asked not to generate a thinking trace for these evaluations. Set it
+to `true` to compare reasoning-enabled behavior later. Request logs show the
+thinking setting; response logs show elapsed time, finish reason, and generated
+token count. Incomplete responses still remain pending.
 Model selection and GPU suitability have not been verified in this environment.
 
 The local client uses Ollama's [structured-output API](https://docs.ollama.com/capabilities/structured-outputs).

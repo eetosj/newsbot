@@ -1,5 +1,13 @@
 # Learning Progress
 
+## Pending decision
+
+- Decision: Relevance boundary for technology-policy news and summary fidelity.
+- Stage: awaiting reasoning (Build checkpoint).
+- Learner live batch: examined=3, accepted=3, errors=0, about 8–10 seconds per item. Stored summaries were inspected read-only.
+- Findings: Finnish AI/wildlife summary includes the source limitation about unproven accident reduction. Hamilton summary is about software engineering; the relevance reason incorrectly connects this to machine learning despite no matching source discussion. ALPR summary adds a claim that the tip originated from an automated AI system; the retrieved source describes a tip in a human WhatsApp group.
+- Awaiting learner boundary for legal/social technology stories versus technical coverage. Stronger source-grounding and allegation attribution need consideration before delivery; no new implementation changes approved.
+
 ## Keyword filtering
 
 - Demonstrated understanding: Learner connected full-text matching to greater coverage, accepted extra candidates, and assigned final relevance assessment to the model. Identified a need for equivalent-term groups.
@@ -82,3 +90,31 @@
 - Live verification: --limit-per-source 10 against a temporary database completed in about 39 seconds with discovered=80, stored=17, duplicates=1, unmatched=57, abstracts=3, source_errors=0, date_excluded=5. All eight configured feeds loaded. The database contains 14 full news articles and 3 research abstracts, all pending evaluation.
 - Learner's default database was not used for live verification. To test their model, collect into the default database and then evaluate with --model qwen3-local.
 - No pending approval checkpoint. Live model quality, Discord/Telegram integration, and scheduled orchestration remain unfinished.
+
+## Thinking disabled for evaluation
+
+- Learner selected thinking disabled after considering latency versus more model reasoning.
+- Implemented: Configurable ollama.think boolean, default false, included explicitly in /api/chat requests. Generation budget remains 2048; schema/decision checks remain strict.
+- Implemented: Logs identify evaluation URL/model/thinking setting before requests, and elapsed time, done status, finish reason, and generated-token count after responses. Incomplete-response errors now include their actual finish metadata.
+- Verification: All 50 tests passed, including explicit thinking-off payload, configurable thinking-on payload, finish-reason diagnostics, and unchanged state-preservation tests.
+- Live retry: The previously failing Yle article still ended with done=True, finish=length, eval_count=2048 after 80.6 seconds, with think=false. It remains pending in the temporary database; the default queue was not modified.
+- Diagnostic probe: A tiny 64-token request with think=false plus /no_think produced 263 thinking characters, no answer, and finish=length. This confirms the imported model still emits thinking. Its template ends the generation prompt with an unconditional assistant <think> opening and has no .Think/enable_thinking control.
+- Client thinking-off setting is implemented and tested, but effective thinking-off is blocked by the imported model setup. Model changes have not been authorized.
+
+## Non-thinking model switch
+
+- Confirmed: Learner authorized the non-thinking model switch, including installation, a tiny JSON probe, Finnish/article and English/abstract temporary-database validation, and setting the default after successful verification.
+- Installation: The agent's Ollama pull stalled at manifest retrieval. The learner installed the model independently as qwen3-instruct-local:latest; the agent cancelled its remaining pull client and verified the installed tag.
+- Metadata: New model points to qwen3-4b-instruct.gguf, 4B, Q4_K_M. Its capability/template metadata still shows thinking indicators, so runtime behavior was tested directly.
+- Tiny probe: JSON ready=true, finish=stop, 6 generated tokens, zero thinking characters.
+- Live samples: Finnish article previously failing on qwen3-local completed with valid JSON in 20.5 seconds / 277 tokens; English research abstract completed in 7.7 seconds / 190 tokens. Both ended with finish=stop and entered ready state; evaluation errors=0.
+- Testing used a separate temporary database. Existing default-queue records were preserved.
+- Implemented: config.example.json now selects qwen3-instruct-local with think=false. Updated README and MODEL_SETUP.md; configuration loading verified. Existing 50 tests passed before this configuration-only switch; no additional implementation tests needed.
+- Next command: .venv/bin/python -m newsbot --evaluate --limit-items 3. Review relevance decisions and generated summaries before implementing Discord delivery.
+- No pending approval checkpoint. Novelty comparison, Discord/Telegram integration, scheduling, and jobs remain unfinished.
+
+## Initial live summary review
+
+- Functional evidence: The learner evaluated three articles successfully with qwen3-instruct-local in 8–10 seconds each. All entered ready state; no evaluation errors.
+- Inspected actual summaries, distinct from logged relevance reasons. The Finnish summary is broadly grounded and retains the source's limitations. Hamilton's summary is grounded in software engineering, while its relevance reason adds an unsupported machine-learning connection. ALPR summary includes an unsupported inference about the origin of the tip.
+- Next learning/design topic: Define topic relevance boundaries and improve factual grounding before Discord posting. Functional JSON validation does not establish factual accuracy.

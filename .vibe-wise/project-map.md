@@ -56,7 +56,7 @@ Chosen delivery constraint: Discord delivery result → logging update; save pos
 Persistent article records will use SQLite to retain metadata and processing status across restarts. Content-aware schema and its legacy migration are implemented; credentials handling remains unresolved.
 
 ## Build and Deployment
-Python 3.11+; standard-library-only storage. Collection dependencies are in `requirements.txt` and installed in `.venv`. Verified command: `.venv/bin/python -m unittest discover -s tests -v` (48 passing tests on Python 3.14.7). CLI: `.venv/bin/python -m newsbot --config config.example.json --database newsbot.sqlite3`. Deployment remains undecided.
+Python 3.11+; standard-library-only storage. Collection dependencies are in `requirements.txt` and installed in `.venv`. Verified command: `.venv/bin/python -m unittest discover -s tests -v` (50 passing tests on Python 3.14.7). CLI: `.venv/bin/python -m newsbot --config config.example.json --database newsbot.sqlite3`. Deployment remains undecided.
 
 ## Unknowns
 Local model selection and GPU suitability; live feed/article access; semantic novelty comparison; summary quality; Discord/Telegram setup; scheduling and automatic preference-change detection; additional news sources; job sources and matching parameters; deployment.
@@ -77,7 +77,7 @@ Local model selection and GPU suitability; live feed/article access; semantic no
 - Shared publication-date filtering with 3-day news and 14-day paper defaults; unknown/future dates are excluded. Evaluation rechecks dates for previously stored candidates. Already queued or posted articles are outside pending evaluation.
 - Ollama uses local /api/chat, a JSON schema, and strict validation. Accepted full news and abstracts require a summary; partial news and rejected items require null. Python retains trusted original posting metadata and derives content notices.
 - Accepted candidates move to ready; rejected/date-excluded pending candidates enter the configurable 24-hour cooldown. API/validation failures leave pending records unchanged; server outages and priority failures stop the batch.
-- Model name is intentionally unset until chosen locally. The example context request is 16384 tokens; conservative prompt budgeting leaves oversized inputs pending. Actual tokenizer behavior, model context support, quality, and GPU memory fit still need live verification.
+- Configured model is now qwen3-instruct-local, installed by the learner and verified on two live samples. The example context request is 16384 tokens; conservative prompt budgeting leaves oversized inputs pending. Actual tokenizer behavior, model context support, quality, and GPU memory fit still need live verification.
 - Semantic novelty comparison remains a separate open design topic. Rejection reasons are logged to terminal rather than a new database field.
 
 ## Implemented Fetch Deadlines
@@ -90,3 +90,14 @@ Local model selection and GPU suitability; live feed/article access; semantic no
 - `http.address_family` defaults to `ipv4`; `auto` retains system dual-stack selection. The selected family is logged and applied only in the isolated HTTP worker, including redirects.
 - The full collection sample passed over IPv4: 80 items inspected, 17 candidates stored (14 news articles, 3 abstracts), zero source errors, about 39 seconds. Verification used a temporary database.
 - Four family-selection tests plus existing tests pass (48 total). Default source configuration is verified for feed retrieval and sample article extraction; HS/io-tech/Quanta still require their own integrations.
+
+## Model Thinking Setting
+- Learner chose thinking disabled for faster evaluations. ollama.think defaults to false and is sent explicitly; true is available for later comparison.
+- Response diagnostics now report finish reason, generated-token count, and elapsed time. Incomplete or invalid outputs still leave items pending.
+- Local metadata confirms qwen3-local is a 4B Q4_K_M Qwen3 with thinking capability. One earlier user-run article was queued; other responses failed completion validation. A controlled thinking-disabled retry in a temporary database still hit the 2048-token limit. A 64-token probe with think=false and /no_think still emitted thinking without a JSON answer. The imported template has no conditional thinking control; the learner subsequently installed a non-thinking instruct variant and live verification succeeded (see Model Switch below).
+
+## Model Switch
+- Default: qwen3-instruct-local (4B Q4_K_M non-thinking instruct GGUF), installed by the learner. The original qwen3-local remains installed.
+- Config explicitly requests think=false. Tiny runtime probe returned six-token JSON with no thinking trace; Finnish news and English abstract samples completed normally in 20.5s and 7.7s.
+- Temporary-database validation queued both samples with no errors; default queue was preserved. Broader relevance and summary quality remain to be reviewed.
+- README and MODEL_SETUP.md document the current setup. Evaluate a small batch with `.venv/bin/python -m newsbot --evaluate --limit-items 3`.
