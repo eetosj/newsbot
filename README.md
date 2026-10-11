@@ -2,8 +2,9 @@
 
 Implemented: configurable RSS/Atom collection, article-text extraction, keyword
 filtering, research abstract collection, and persistent SQLite article state.
-Local Ollama relevance evaluation and summarization are implemented, with controlled
-response tests. Live model verification remains pending. Discord delivery, Telegram
+Local Ollama relevance evaluation, source verification, and bounded summary revisions
+are implemented and tested with live samples. Model judgments can still be wrong.
+Discord delivery, Telegram
 alerts, and job searches come later.
 
 Requires Python 3.11 or newer. Set up a project-local environment:
@@ -108,7 +109,7 @@ explicitly asked not to generate a thinking trace for these evaluations. Set it
 to `true` to compare reasoning-enabled behavior later. Request logs show the
 thinking setting; response logs show elapsed time, finish reason, and generated
 token count. Incomplete responses still remain pending.
-Model selection and GPU suitability have not been verified in this environment.
+The selected model has been exercised locally; GPU suitability remains unverified.
 
 The local client uses Ollama's [structured-output API](https://docs.ollama.com/capabilities/structured-outputs).
 The required decision is a JSON object with exactly these fields:
@@ -117,19 +118,38 @@ The required decision is a JSON object with exactly these fields:
 {"rejected": false, "reason": "Substantial discussion of AI", "summary": "A concise summary."}
 ```
 
-- The model judges substantive topic coverage; partial news uses a more lenient
+- The model accepts central or substantial shared topic coverage, including
+  technology legislation and social effects, and rejects incidental mentions.
+  Partial news uses a more lenient
   threshold based on a concrete title/excerpt connection.
 - Rejected items require `summary: null` and enter the configured cooldown.
 - Accepted partial news requires `summary: null` and keeps its access notice.
-- Accepted full news gets a summary; accepted paper abstracts get a labeled preview.
-  Summaries stay within 1500 characters and use the source language.
+- Accepted full news and paper abstracts receive a separate source-verification
+  pass before their summary or preview can enter the delivery queue. Summaries stay
+  within 1500 characters and use the source language.
 - Source text is placed in a separate data message. Prompts instruct the model to
   ignore embedded instructions and avoid inventing information. Python supplies
   original titles, links, sources, and content notices; the model cannot override
   them through extra JSON fields.
+- Reasons and summaries must use only supplied source information, without internet
+  retrieval or facts from the model's background knowledge. Prompt rules preserve
+  actors, attribution, meaning, uncertainty, and limitations, keep allegations as
+  allegations, and prohibit unsupported causal or topic connections. These are
+  model instructions; JSON validation does not verify factual accuracy.
 - Malformed JSON, inconsistent decisions, unfinished responses, or request failures
   leave items pending and produce an error log. Server failures stop the batch;
   failed priority reevaluations also stop it so lower-priority items cannot bypass them.
+- The same local model checks each draft in a fresh request containing the source
+  and draft. Failed checks return specific issues to a separate revision request.
+  Up to three revisions are allowed after the initial draft: at most four drafts
+  are checked. Passing summaries are queued; four failed checks queue the relevant
+  item's original link without a summary, with a saved omission notice. Source
+  content kinds remain intact. API errors or invalid responses leave the article
+  pending instead of triggering this fallback. Logs and result counters report
+  verification checks, revisions, and omitted summaries.
+- Verification reduces errors but the same model can repeat or overlook them.
+  Existing ready items are not automatically rechecked. Discord delivery remains
+  unimplemented; this step prepares the delivery queue.
 - Full inputs are never silently shortened by this client. A conservative UTF-8
   byte budget reserves 2048 context tokens for output and formatting. Items exceeding
   it remain pending; increase `context_tokens` only to a value supported by your
@@ -157,7 +177,8 @@ Run the tests from the repository root:
   They appear first in `pending()`, even after a restart. The future orchestration
   layer must process them before collecting new content.
 - `mark_ready()` persists the generated summary for delivery. Partial news must
-  queue without a summary; full articles and research abstracts require one.
+  queue without a summary; full articles and research abstracts require one unless
+  explicitly queued with `summary_omitted=True` after verification exhaustion.
 - `defer_delivery()` retains a queued summary and schedules its next attempt.
 - `mark_posted()` must be called only after a successful Discord response.
 - All timestamps must include a timezone and are stored in UTC. Publication and

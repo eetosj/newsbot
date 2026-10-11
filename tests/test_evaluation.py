@@ -11,7 +11,8 @@ from newsbot.articles import Article, ArticleStatus, ContentKind
 from newsbot.collection import Collector, FetchResult
 from newsbot.config import CollectionConfig, EvaluationConfig, FeedSource, OllamaConfig, load_config
 from newsbot.evaluation import Evaluator
-from newsbot.ollama import EvaluationDecision, ModelError, OllamaClient, OllamaUnavailable
+from newsbot.ollama import (EvaluationDecision, ModelError, OllamaClient, OllamaUnavailable,
+                            VerificationDecision)
 from newsbot.recency import exclusion_reason
 from newsbot.storage import ArticleStore
 
@@ -47,6 +48,9 @@ class FakeClient:
         if isinstance(value, Exception):
             raise value
         return EvaluationDecision.parse(json.dumps(value), item.content_kind)
+
+    def verify(self, item, summary):
+        return VerificationDecision(True, ())
 
 
 class ModelClientTests(unittest.TestCase):
@@ -148,6 +152,52 @@ class ModelClientTests(unittest.TestCase):
         with self.assertRaises(ModelError):
             EvaluationDecision.parse(json.dumps(decision()), ContentKind.PARTIAL_ARTICLE)
 
+    def test_verification_and_revision_have_fresh_source_contexts(self):
+        issues = ("Draft changes an allegation into a court finding.",)
+        responses = [self.mocked_response(envelope({"passed": False, "issues": list(issues)})),
+                     self.mocked_response(envelope({"summary": "The plaintiff alleged wrongdoing."}))]
+        with patch("newsbot.ollama.urlopen", side_effect=responses) as open_url:
+            check = self.client.verify(self.item, "The court proved wrongdoing.")
+            revised = self.client.revise(self.item, "The court proved wrongdoing.", check.issues)
+        self.assertFalse(check.passed)
+        self.assertEqual(revised, "The plaintiff alleged wrongdoing.")
+        for index, call in enumerate(open_url.call_args_list):
+            payload = json.loads(call.args[0].data)
+            self.assertEqual(len(payload["messages"]), 2)
+            data = json.loads(payload["messages"][1]["content"])
+            self.assertEqual(data["source"]["content"], self.item.content)
+            self.assertEqual(data["draft_summary"], "The court proved wrongdoing.")
+            if index == 0:
+                self.assertNotIn("verification_issues", data)
+            else:
+                self.assertEqual(data["verification_issues"], list(issues))
+            self.assertNotIn("tools", payload)
+
+    def test_invalid_verification_and_revision_responses_fail_closed(self):
+        invalid = [{"passed": True, "issues": ["An error"]}, {"passed": False, "issues": []},
+                   {"passed": "true", "issues": []}, {"passed": False, "issues": [""]},
+                   {"passed": False, "issues": [1]}, {"passed": False, "issues": ["x" * 601]},
+                   {"passed": False, "issues": ["error"] * 7},
+                   {"passed": True, "issues": [], "summary": "extra"}]
+        for data in invalid:
+            with self.subTest(data=data), self.assertRaises(ModelError):
+                VerificationDecision.parse(json.dumps(data))
+        for text in ('not JSON', '{"passed":true,"passed":true,"issues":[]}',
+                     '{"passed":true,"issues":NaN}'):
+            with self.assertRaises(ModelError):
+                VerificationDecision.parse(text)
+        for data in ({"summary": None}, {"summary": " "}, {"summary": "x" * 1501},
+                     {"summary": "valid", "passed": True}):
+            with self.subTest(data=data), patch("newsbot.ollama.urlopen", return_value=
+                    self.mocked_response(envelope(data))), self.assertRaises(ModelError):
+                self.client.revise(self.item, "draft", ("error",))
+
+    def test_verifier_context_budget_does_not_truncate_or_send(self):
+        item = replace(self.item, content="x" * 20000)
+        with patch("newsbot.ollama.urlopen") as open_url, self.assertRaises(ModelError):
+            self.client.verify(item, "Draft")
+        open_url.assert_not_called()
+
 
 class EvaluationFlowTests(unittest.TestCase):
     def setUp(self):
@@ -163,6 +213,120 @@ class EvaluationFlowTests(unittest.TestCase):
     def reopen(self):
         self.store.close()
         self.store = ArticleStore(self.path)
+
+    def test_failed_check_feedback_revises_then_verifies_before_queueing(self):
+        item = article("corrected")
+        self.store.add(item)
+        client = Mock()
+        client.evaluate.return_value = EvaluationDecision(False, "Relevant", "Initial draft")
+        client.verify.side_effect = [VerificationDecision(False, ("Preserve allegation",)),
+                                     VerificationDecision(True, ())]
+        client.revise.return_value = "Corrected draft"
+        with self.assertLogs("newsbot.evaluation", level="WARNING"):
+            result = Evaluator(self.config, self.store, client=client).evaluate_pending(now=NOW)
+        client.revise.assert_called_once_with(item, "Initial draft", ("Preserve allegation",))
+        self.assertEqual([call.args[1] for call in client.verify.call_args_list],
+                         ["Initial draft", "Corrected draft"])
+        self.assertEqual((result.accepted, result.verification_checks, result.summary_revisions), (1, 2, 1))
+        self.reopen()
+        self.assertEqual(self.store.get(item.url).summary, "Corrected draft")
+        self.assertFalse(self.store.get(item.url).summary_omitted)
+
+    def test_four_failed_checks_queue_persistent_link_only_fallback(self):
+        for kind in (ContentKind.FULL_ARTICLE, ContentKind.RESEARCH_ABSTRACT):
+            with self.subTest(kind=kind):
+                item = article(kind.value, kind=kind)
+                self.store.add(item)
+                client = Mock()
+                client.evaluate.return_value = EvaluationDecision(False, "Relevant", "Initial draft")
+                client.verify.return_value = VerificationDecision(False, ("Unsupported claim",))
+                client.revise.side_effect = ["Revision 1", "Revision 2", "Revision 3"]
+                with self.assertLogs("newsbot.evaluation", level="WARNING"):
+                    result = Evaluator(self.config, self.store, client=client).evaluate_pending(now=NOW)
+                self.assertEqual(client.verify.call_count, 4)
+                self.assertEqual(client.revise.call_count, 3)
+                self.assertEqual((result.accepted, result.summary_omitted, result.errors), (1, 1, 0))
+                self.reopen()
+                saved = self.store.get(item.url)
+                self.assertEqual(saved.status, ArticleStatus.READY)
+                self.assertEqual(saved.content_kind, kind)
+                self.assertTrue(saved.summary_omitted)
+                self.assertIsNone(saved.summary)
+                self.assertIn("verification failures", saved.delivery_notice)
+
+    def test_fourth_draft_can_pass_without_fallback(self):
+        item = article("last-chance")
+        self.store.add(item)
+        client = Mock()
+        client.evaluate.return_value = EvaluationDecision(False, "Relevant", "Initial draft")
+        client.verify.side_effect = [VerificationDecision(False, ("Error",))] * 3 + [VerificationDecision(True, ())]
+        client.revise.side_effect = ["Revision 1", "Revision 2", "Revision 3"]
+        with self.assertLogs("newsbot.evaluation", level="WARNING"):
+            result = Evaluator(self.config, self.store, client=client).evaluate_pending(now=NOW)
+        self.assertEqual((result.verification_checks, result.summary_revisions, result.summary_omitted), (4, 3, 0))
+        self.assertEqual(self.store.get(item.url).summary, "Revision 3")
+
+    def test_technical_failure_at_any_stage_keeps_article_pending(self):
+        for stage in ("verify", "revise"):
+            with self.subTest(stage=stage):
+                item = article(stage)
+                self.store.add(item)
+                client = Mock()
+                client.evaluate.return_value = EvaluationDecision(False, "Relevant", "Initial draft")
+                client.verify.return_value = VerificationDecision(False, ("Error",))
+                getattr(client, stage).side_effect = OllamaUnavailable("Offline")
+                with self.assertLogs("newsbot.evaluation", level="WARNING"):
+                    result = Evaluator(self.config, self.store, client=client).evaluate_pending(now=NOW, limit=1)
+                self.assertEqual((result.errors, result.summary_omitted, result.accepted), (1, 0, 0))
+                self.reopen()
+                saved = self.store.get(item.url)
+                self.assertEqual(saved.status, ArticleStatus.PENDING)
+                self.assertIsNone(saved.summary)
+                self.assertFalse(saved.summary_omitted)
+                # Remove this pending sample from the next iteration's batch.
+                self.store.reject(item.url, until=NOW + timedelta(days=1))
+
+    def test_partial_and_rejected_items_skip_verification(self):
+        partial = article("partial-skip", kind=ContentKind.PARTIAL_ARTICLE)
+        rejected = article("rejected-skip")
+        for item in (partial, rejected):
+            self.store.add(item)
+        client = Mock()
+        client.evaluate.side_effect = [EvaluationDecision(False, "Relevant", None),
+                                       EvaluationDecision(True, "Incidental", None)]
+        result = Evaluator(self.config, self.store, client=client).evaluate_pending(now=NOW)
+        self.assertEqual((result.accepted, result.rejected), (1, 1))
+        client.verify.assert_not_called()
+        client.revise.assert_not_called()
+
+    def test_invalid_check_preserves_priority_and_stops_lower_priority_work(self):
+        old = article("priority-check")
+        new = article("ordinary-check")
+        self.store.add(new)
+        self.store.add(old)
+        self.store.reject(old.url, until=NOW + timedelta(days=1))
+        self.store.reset_cooldowns()
+        client = Mock()
+        client.evaluate.return_value = EvaluationDecision(False, "Relevant", "Draft")
+        client.verify.side_effect = ModelError("Invalid check")
+        with self.assertLogs("newsbot.evaluation", level="WARNING"):
+            result = Evaluator(self.config, self.store, client=client).evaluate_pending(now=NOW)
+        self.assertEqual((result.examined, result.errors, result.accepted), (1, 1, 0))
+        self.assertTrue(self.store.get(old.url).reevaluation_priority)
+        self.assertEqual(self.store.get(new.url).status, ArticleStatus.PENDING)
+        client.revise.assert_not_called()
+
+    def test_invalid_check_leaves_pending_and_allows_next_ordinary_item(self):
+        for name in ("invalid-check", "valid-check"):
+            self.store.add(article(name))
+        client = Mock()
+        client.evaluate.return_value = EvaluationDecision(False, "Relevant", "Draft")
+        client.verify.side_effect = [ModelError("Invalid check"), VerificationDecision(True, ())]
+        with self.assertLogs("newsbot.evaluation", level="WARNING"):
+            result = Evaluator(self.config, self.store, client=client).evaluate_pending(now=NOW)
+        self.assertEqual((result.errors, result.accepted, result.summary_omitted), (1, 1, 0))
+        self.assertEqual(self.store.get(article("invalid-check").url).status, ArticleStatus.PENDING)
+        self.assertEqual(self.store.get(article("valid-check").url).summary, "Draft")
 
     def test_full_abstract_partial_and_rejected_results_persist(self):
         full = article("full")

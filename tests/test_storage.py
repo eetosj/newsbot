@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -28,6 +29,42 @@ class StorageTests(unittest.TestCase):
     def reopen(self):
         self.store.close()
         self.store = ArticleStore(self.path)
+
+    def test_link_only_fallback_survives_retry_and_confirmed_delivery(self):
+        item = article("fallback")
+        self.store.add(item)
+        self.store.mark_ready(item.url, summary_omitted=True)
+        self.store.defer_delivery(item.url, until=NOW + timedelta(hours=1))
+        self.reopen()
+        saved = self.store.get(item.url)
+        self.assertTrue(saved.summary_omitted)
+        self.assertIsNone(saved.summary)
+        self.assertEqual(saved.content_kind, ContentKind.FULL_ARTICLE)
+        self.assertEqual(self.store.ready(now=NOW), [])
+        self.assertEqual(len(self.store.ready(now=NOW + timedelta(hours=1))), 1)
+        self.store.mark_posted(item.url, at=NOW + timedelta(hours=1))
+        self.reopen()
+        self.assertTrue(self.store.get(item.url).summary_omitted)
+        self.assertEqual(self.store.get(item.url).status, ArticleStatus.POSTED)
+
+    def test_fallback_requires_explicit_valid_marker_in_python_and_sql(self):
+        item = article("guarded-fallback")
+        self.store.add(item)
+        with self.assertRaises(ValueError):
+            self.store.mark_ready(item.url)
+        with self.assertRaises(ValueError):
+            self.store.mark_ready(item.url, "Unverified summary", summary_omitted=True)
+        with self.assertRaises(ValueError):
+            self.store.mark_ready(item.url, summary_omitted=1)
+        with sqlite3.connect(self.path) as connection:
+            for statement in (
+                "UPDATE articles SET status='ready'",
+                "UPDATE articles SET summary_omitted=1",
+                "UPDATE articles SET status='ready', summary_omitted=1, summary='Bad draft'",
+            ):
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(statement)
+        self.assertEqual(self.store.get(item.url).status, ArticleStatus.PENDING)
 
     def test_metadata_and_queued_summary_survive_restart(self):
         item = article("queued")

@@ -9,6 +9,35 @@ from newsbot.storage import ArticleStore
 
 
 class MigrationTests(unittest.TestCase):
+    def test_v2_migration_preserves_content_kinds_and_all_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "v2.sqlite3"
+            with sqlite3.connect(path) as connection:
+                connection.execute('''CREATE TABLE articles (
+                    url TEXT PRIMARY KEY, title TEXT, source TEXT, content TEXT,
+                    published_at TEXT, summary TEXT, status TEXT, posted_at TEXT,
+                    cooldown_until TEXT, next_delivery_attempt TEXT,
+                    reevaluation_priority INTEGER, content_kind TEXT)''')
+                connection.execute("PRAGMA user_version=2")
+                for kind in ContentKind:
+                    connection.execute("INSERT INTO articles VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (f"https://example.com/{kind.value}", "Title", "Source", "Body",
+                         None, None if kind == ContentKind.PARTIAL_ARTICLE else "Saved summary",
+                         "ready", None, None, None, 0, kind.value))
+            for _ in range(2):
+                with ArticleStore(path) as store:
+                    self.assertEqual(len(store.ready()), 3)
+                    for kind in ContentKind:
+                        saved = store.get(f"https://example.com/{kind.value}")
+                        self.assertEqual(saved.content_kind, kind)
+                        self.assertFalse(saved.summary_omitted)
+                        self.assertEqual(saved.content, "Body")
+                        self.assertEqual(saved.summary,
+                                         None if kind == ContentKind.PARTIAL_ARTICLE else "Saved summary")
+            with sqlite3.connect(path) as connection:
+                self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
+
     def test_original_records_keep_all_state_and_migration_is_repeatable(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "legacy.sqlite3"
@@ -52,7 +81,7 @@ class MigrationTests(unittest.TestCase):
                     self.assertIsNotNone(store.get("https://example.com/posted").posted_at)
             with sqlite3.connect(path) as connection:
                 self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
-                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
+                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
 
 
 if __name__ == "__main__":

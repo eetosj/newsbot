@@ -32,9 +32,12 @@ class Article:
     next_delivery_attempt: datetime | None = None
     reevaluation_priority: bool = False
     content_kind: ContentKind = ContentKind.FULL_ARTICLE
+    summary_omitted: bool = False
 
     @property
     def delivery_notice(self) -> str | None:
+        if self.summary_omitted:
+            return "AI summary omitted after repeated source-verification failures. Read the original source."
         if self.content_kind == ContentKind.PARTIAL_ARTICLE:
             return "Full article text was not retrieved. Access may be restricted. No AI summary."
         if self.content_kind == ContentKind.RESEARCH_ABSTRACT:

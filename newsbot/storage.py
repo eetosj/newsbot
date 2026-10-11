@@ -27,6 +27,7 @@ def _article(row: sqlite3.Row) -> Article:
     data["status"] = ArticleStatus(data["status"])
     data["content_kind"] = ContentKind(data["content_kind"])
     data["reevaluation_priority"] = bool(data["reevaluation_priority"])
+    data["summary_omitted"] = bool(data["summary_omitted"])
     return Article(**data)
 
 
@@ -51,7 +52,7 @@ class ArticleStore:
         self._connection.execute("BEGIN IMMEDIATE")
         with self._connection:
             version = self._connection.execute("PRAGMA user_version").fetchone()[0]
-            if version > 2:
+            if version > 3:
                 raise ValueError("Database schema is newer than this application")
             exists = self._connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'articles'"
@@ -59,21 +60,23 @@ class ArticleStore:
             columns = {row["name"] for row in self._connection.execute(
                 "PRAGMA table_info(articles)"
             )}
-            if exists and "content_kind" not in columns:
-                self._create_table("articles_v2")
+            if exists and "summary_omitted" not in columns:
+                self._create_table("articles_v3")
                 names = ("url, title, source, content, published_at, summary, status, "
                          "posted_at, cooldown_until, next_delivery_attempt, reevaluation_priority")
+                if "content_kind" in columns:
+                    names += ", content_kind"
                 self._connection.execute(
-                    f"INSERT INTO articles_v2 ({names}) SELECT {names} FROM articles ORDER BY rowid"
+                    f"INSERT INTO articles_v3 ({names}) SELECT {names} FROM articles ORDER BY rowid"
                 )
                 self._connection.execute("DROP TABLE articles")
-                self._connection.execute("ALTER TABLE articles_v2 RENAME TO articles")
+                self._connection.execute("ALTER TABLE articles_v3 RENAME TO articles")
             elif not exists:
                 self._create_table("articles")
             self._connection.execute(
                 "CREATE INDEX IF NOT EXISTS articles_status ON articles(status)"
             )
-            self._connection.execute("PRAGMA user_version = 2")
+            self._connection.execute("PRAGMA user_version = 3")
 
     def _create_table(self, name: str) -> None:
         # Names are fixed internal constants, never supplied by configuration.
@@ -94,10 +97,14 @@ class ArticleStore:
                         CHECK (reevaluation_priority IN (0, 1)),
                     content_kind TEXT NOT NULL DEFAULT 'full_article'
                         CHECK (content_kind IN ('full_article', 'partial_article', 'research_abstract')),
+                    summary_omitted INTEGER NOT NULL DEFAULT 0 CHECK (summary_omitted IN (0, 1)),
+                    CHECK (summary_omitted = 0 OR (summary IS NULL
+                           AND content_kind != 'partial_article' AND status IN ('ready', 'posted'))),
                     CHECK ((status = 'posted') = (posted_at IS NOT NULL)),
                     CHECK ((status = 'cooldown') = (cooldown_until IS NOT NULL)),
                     CHECK (content_kind != 'partial_article' OR summary IS NULL),
                     CHECK (status NOT IN ('ready', 'posted') OR content_kind = 'partial_article'
+                           OR summary_omitted = 1
                            OR (summary IS NOT NULL AND length(trim(summary)) > 0)),
                     CHECK (next_delivery_attempt IS NULL OR status = 'ready')
                 )
@@ -119,7 +126,8 @@ class ArticleStore:
             raise ValueError("URL, title, and source must not be blank")
         if (article.status != ArticleStatus.PENDING or article.summary is not None
                 or article.posted_at is not None or article.cooldown_until is not None
-                or article.next_delivery_attempt is not None or article.reevaluation_priority):
+                or article.next_delivery_attempt is not None or article.reevaluation_priority
+                or article.summary_omitted):
             raise ValueError("New articles must be pending without processing state")
         with self._connection:
             cursor = self._connection.execute("""
@@ -169,21 +177,27 @@ class ArticleStore:
             WHERE url = ? AND status = 'pending'
         """, (_timestamp(until), url), url, ArticleStatus.PENDING)
 
-    def mark_ready(self, url: str, summary: str | None = None) -> None:
-        """Partial news queues without a summary; other content requires one."""
+    def mark_ready(self, url: str, summary: str | None = None, *,
+                   summary_omitted: bool = False) -> None:
+        """Queue a summary, partial news, or an explicit verification fallback."""
+        if type(summary_omitted) is not bool:
+            raise ValueError("summary_omitted must be a boolean")
         item = self.get(url)
         if item is None:
             raise KeyError(url)
         if item.content_kind == ContentKind.PARTIAL_ARTICLE:
-            if summary is not None:
+            if summary is not None or summary_omitted:
                 raise ValueError("Partial news must not have an AI summary")
+        elif summary_omitted:
+            if summary is not None:
+                raise ValueError("An omitted summary must be null")
         elif summary is None or not summary.strip():
             raise ValueError("Full articles and abstract previews require a summary")
         self._transition("""
-            UPDATE articles SET status = 'ready', summary = ?,
+            UPDATE articles SET status = 'ready', summary = ?, summary_omitted = ?,
                 reevaluation_priority = 0
             WHERE url = ? AND status = 'pending'
-        """, (summary, url), url, ArticleStatus.PENDING)
+        """, (summary, int(summary_omitted), url), url, ArticleStatus.PENDING)
 
     def ready(self, *, now: datetime | None = None) -> list[Article]:
         return self._select("""

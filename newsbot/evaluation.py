@@ -11,6 +11,7 @@ from .storage import ArticleStore
 
 
 logger = logging.getLogger(__name__)
+MAX_SUMMARY_REVISIONS = 3
 
 
 @dataclass
@@ -20,6 +21,9 @@ class EvaluationResult:
     rejected: int = 0
     date_excluded: int = 0
     errors: int = 0
+    verification_checks: int = 0
+    summary_revisions: int = 0
+    summary_omitted: int = 0
 
 
 class Evaluator:
@@ -50,6 +54,23 @@ class Evaluator:
                 continue
             try:
                 decision = self.client.evaluate(article, self.config.keywords)
+                summary = decision.summary
+                summary_omitted = False
+                if not decision.rejected and summary is not None:
+                    for draft in range(MAX_SUMMARY_REVISIONS + 1):
+                        check = self.client.verify(article, summary)
+                        result.verification_checks += 1
+                        if check.passed:
+                            logger.info("Summary verified for %s (draft %s)", article.url, draft + 1)
+                            break
+                        logger.warning("Summary verification failed for %s (draft %s): %s",
+                                       article.url, draft + 1, "; ".join(check.issues))
+                        if draft == MAX_SUMMARY_REVISIONS:
+                            summary = None
+                            summary_omitted = True
+                            break
+                        summary = self.client.revise(article, summary, check.issues)
+                        result.summary_revisions += 1
             except ModelError as error:
                 result.errors += 1
                 logger.warning("Evaluation failed for %s; remains pending: %s", article.url, error)
@@ -63,7 +84,10 @@ class Evaluator:
                 result.rejected += 1
                 logger.info("Rejected %s: %s", article.url, decision.reason)
             else:
-                self.store.mark_ready(article.url, decision.summary)
+                self.store.mark_ready(article.url, summary, summary_omitted=summary_omitted)
                 result.accepted += 1
+                if summary_omitted:
+                    result.summary_omitted += 1
+                    logger.warning("Queued link only for %s after four failed summary checks", article.url)
                 logger.info("Queued %s: %s", article.url, decision.reason)
         return result
