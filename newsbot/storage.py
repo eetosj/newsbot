@@ -77,6 +77,12 @@ class ArticleStore:
                 "CREATE INDEX IF NOT EXISTS articles_status ON articles(status)"
             )
             self._connection.execute("PRAGMA user_version = 3")
+            self._connection.execute("""
+                CREATE TABLE IF NOT EXISTS delivery_cooldowns (
+                    channel_id TEXT PRIMARY KEY NOT NULL,
+                    next_attempt TEXT NOT NULL
+                )
+            """)
 
     def _create_table(self, name: str) -> None:
         # Names are fixed internal constants, never supplied by configuration.
@@ -212,6 +218,22 @@ class ArticleStore:
             UPDATE articles SET next_delivery_attempt = ?
             WHERE url = ? AND status = 'ready'
         """, (_timestamp(until), url), url, ArticleStatus.READY)
+
+    def pause_delivery(self, channel_id: str, *, until: datetime) -> None:
+        """Persist a channel-wide break, including for newly queued articles."""
+        with self._connection:
+            self._connection.execute("""
+                INSERT INTO delivery_cooldowns VALUES (?, ?)
+                ON CONFLICT(channel_id) DO UPDATE SET
+                    next_attempt = max(next_attempt, excluded.next_attempt)
+            """, (channel_id, _timestamp(until)))
+
+    def delivery_paused_until(self, channel_id: str, *, now: datetime | None = None) -> datetime | None:
+        row = self._connection.execute(
+            "SELECT next_attempt FROM delivery_cooldowns WHERE channel_id = ? AND next_attempt > ?",
+            (channel_id, _now(now)),
+        ).fetchone()
+        return datetime.fromisoformat(row[0]) if row else None
 
     def mark_posted(self, url: str, *, at: datetime | None = None) -> None:
         """Caller must invoke this only after Discord confirms successful delivery."""

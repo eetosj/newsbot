@@ -4,8 +4,8 @@ Implemented: configurable RSS/Atom collection, article-text extraction, keyword
 filtering, research abstract collection, and persistent SQLite article state.
 Local Ollama relevance evaluation, source verification, and bounded summary revisions
 are implemented and tested with live samples. Model judgments can still be wrong.
-Discord delivery, Telegram
-alerts, and job searches come later.
+One-pass Discord delivery is implemented with previews, bounded retries, and saved
+cooldowns. Scheduling, Telegram alerts, and job searches come later.
 
 Requires Python 3.11 or newer. Set up a project-local environment:
 
@@ -148,8 +148,7 @@ The required decision is a JSON object with exactly these fields:
   pending instead of triggering this fallback. Logs and result counters report
   verification checks, revisions, and omitted summaries.
 - Verification reduces errors but the same model can repeat or overlook them.
-  Existing ready items are not automatically rechecked. Discord delivery remains
-  unimplemented; this step prepares the delivery queue.
+  Existing ready items are not automatically rechecked.
 - Full inputs are never silently shortened by this client. A conservative UTF-8
   byte budget reserves 2048 context tokens for output and formatting. Items exceeding
   it remain pending; increase `context_tokens` only to a value supported by your
@@ -158,6 +157,73 @@ The required decision is a JSON object with exactly these fields:
 The command exits with code 1 when an evaluation fails. Rejection reasons appear
 in terminal logs; they are not stored as a separate database field. Comparing
 information novelty with previously posted coverage remains unimplemented.
+
+## Discord delivery
+
+Create a Discord application and install its bot in your server. Give it **View
+Channels** and **Send Messages** access to the news text channel. Enable Developer
+Mode in Discord's settings, then right-click the news channel and copy its channel
+ID. See Discord's [bot setup guide](https://docs.discord.com/developers/quick-start/getting-started).
+Discord also documents [how to copy channel IDs](https://support.discord.com/hc/en-us/articles/206346498).
+
+The sender reads `DISCORD_BOT_TOKEN` and `DISCORD_NEWS_CHANNEL_ID` from the process
+environment. It does not automatically load `.env` files. In Bash, enter the values
+without putting the token into command history:
+
+```bash
+read -r -s -p "Discord bot token: " DISCORD_BOT_TOKEN
+printf '\n'
+export DISCORD_BOT_TOKEN
+read -r -p "Discord news channel ID: " DISCORD_NEWS_CHANNEL_ID
+export DISCORD_NEWS_CHANNEL_ID
+```
+
+Preview due ready messages locally first; this needs no credentials and sends no
+requests:
+
+```bash
+.venv/bin/python -m newsbot --deliver --preview --limit-items 3
+```
+
+To send one ready item:
+
+```bash
+.venv/bin/python -m newsbot --deliver --limit-items 1
+```
+
+Omit `--limit-items` to process all due ready items. Delivery does not load feed or
+model configuration. Messages contain title, UTC publication date, optional
+summary, optional source/omission notice, and the original link, in that order.
+Missing fields are omitted. Messages over Discord's 2000-character limit remain
+queued with an error; summaries are not silently shortened. Mentions in source
+text cannot ping users or roles.
+
+The standard-library HTTP client marks an article posted only after a successful
+response containing a message ID for the configured channel. Connection failures
+and server errors receive five retries after the initial attempt, with delays of
+1, 2, 4, 8, and 16 seconds. Exhaustion ends the pass and saves a ten-minute break
+for the channel and the failed article. That channel break also covers newly
+queued items and survives restarting the command.
+
+Discord's requested rate-limit delays override shorter waits. Waits over 60
+seconds are saved rather than slept through. An exhausted quota reported on a
+successful send ends the pass and saves its reset time. An invalid token,
+permissions/channel error, or unconfirmed response stops the pass without marking
+the remaining articles posted. These errors require correction before rerunning.
+See Discord's [rate-limit rules](https://docs.discord.com/developers/topics/rate-limits)
+and [Create Message API](https://docs.discord.com/developers/resources/message#create-message).
+
+This command runs once: it does not automatically wake up after a break. Re-run it
+after the saved deadline; scheduled recovery and Telegram alerts remain future
+work. Exit code 1 reports delivery errors; a normal rate-limit pause is not an
+error. Previewing does not change article statuses, though opening an older
+database can migrate its schema and create the delivery-cooldown table.
+
+Repeated sends use a stable nonce with Discord's short-window duplicate check.
+This reduces duplicate messages after ambiguous failures, but is not an
+exactly-once guarantee: a crash between sending and saving can still cause a
+duplicate later. Existing ready summaries are not retroactively verified by the
+sender; inspect old queued content before sending it.
 
 Run the tests from the repository root:
 

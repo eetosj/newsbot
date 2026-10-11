@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -12,7 +13,7 @@ class MigrationTests(unittest.TestCase):
     def test_v2_migration_preserves_content_kinds_and_all_rows(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "v2.sqlite3"
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection, connection:
                 connection.execute('''CREATE TABLE articles (
                     url TEXT PRIMARY KEY, title TEXT, source TEXT, content TEXT,
                     published_at TEXT, summary TEXT, status TEXT, posted_at TEXT,
@@ -34,7 +35,7 @@ class MigrationTests(unittest.TestCase):
                         self.assertEqual(saved.content, "Body")
                         self.assertEqual(saved.summary,
                                          None if kind == ContentKind.PARTIAL_ARTICLE else "Saved summary")
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection, connection:
                 self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
                 self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
 
@@ -42,7 +43,7 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "legacy.sqlite3"
             timestamp = "2026-10-09T12:00:00.000000+00:00"
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection, connection:
                 # Original schema, before content kinds were introduced.
                 connection.execute('''CREATE TABLE articles (
                     url TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL,
@@ -79,7 +80,7 @@ class MigrationTests(unittest.TestCase):
                     self.assertEqual(store.get("https://example.com/ready").summary, "Saved summary")
                     self.assertIsNotNone(store.get("https://example.com/ready").next_delivery_attempt)
                     self.assertIsNotNone(store.get("https://example.com/posted").posted_at)
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection, connection:
                 self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
                 self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
 

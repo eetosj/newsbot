@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -56,7 +57,7 @@ class StorageTests(unittest.TestCase):
             self.store.mark_ready(item.url, "Unverified summary", summary_omitted=True)
         with self.assertRaises(ValueError):
             self.store.mark_ready(item.url, summary_omitted=1)
-        with sqlite3.connect(self.path) as connection:
+        with closing(sqlite3.connect(self.path)) as connection, connection:
             for statement in (
                 "UPDATE articles SET status='ready'",
                 "UPDATE articles SET summary_omitted=1",
